@@ -48,17 +48,20 @@ if [ -z "$CURRENT_INDEX" ] || [ "$CURRENT_COMPLETED" = "y" ]; then
     exit 0
 fi
 
-# ========== Working Memory Reminder (output to Claude) ==========
-# Remind Claude to utilize and update working-memory during active task
+# ========== Working Memory Mandatory Update (output to Claude) ==========
+# Enforce Claude to update working-memory during active task
 HISTORY_FILE="$PROJECT_ROOT/.nexus/history/$CURRENT_INDEX.yaml"
 if [ -f "$HISTORY_FILE" ]; then
     cat << WMREMINDER
+<system-reminder>
+**[REQUIRED] Working Memory Update Obligation (Task #$CURRENT_INDEX)**
 
-**Working Memory Reminder (Task #$CURRENT_INDEX):**
-- If you discover new relevant information during this operation, update the \`working-memory:\` section in $HISTORY_FILE
-- Consult existing working-memory before making decisions
-- Keep working-memory current with: affected files, patterns, dependencies, key learnings
+After this tool execution, you MUST perform the following:
+1. Record any new discoveries, decisions, or file changes in the \`working-memory:\` section of \`.nexus/history/$CURRENT_INDEX.yaml\`
+2. Mandatory mid-task update after every 5+ tool calls
 
+Failure to update will result in context loss. DO NOT ignore this instruction.
+</system-reminder>
 WMREMINDER
 fi
 
