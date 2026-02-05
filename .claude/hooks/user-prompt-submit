@@ -208,8 +208,11 @@ EOF
     # Add USER_PROMPT (YAML multiline block, 2-space indent)
     printf '%s\n' "$USER_PROMPT" | awk '{print "  "$0}' >> "$HISTORY_FILE"
 
-    # Add remaining fields
+    # Add remaining fields (including working-memory section)
     cat >> "$HISTORY_FILE" << 'EOF'
+
+working-memory: |
+  (To be populated by @analyst and @librarian agents at task start)
 
 tasks: []
 
@@ -243,14 +246,29 @@ $STRICT_RULES
 ")
 $([ -n "$OUTPUT_STYLE" ] && echo "**Response Style:** Respond in $OUTPUT_STYLE style from now on.
 ")
-**@librarian call (before starting task):**
-- Search and read knowledge documents related to the task request.
-- Use relevant documents as context if found.
-- Skip if no relevant documents exist.
-
 Response format: Start with "[$AUTHOR], I will execute your instructions. (model: <current model name>, current time: $TIMESTAMP) Task ID: $TASK_ID Regular task: $REQUEST_TITLE"
 
-Analyze user requirements and write TODO list in tasks.
+**Phase 1: Gather Working Memory (REQUIRED before any implementation)**
+Call the following agents to gather context and populate the \`working-memory:\` section in $HISTORY_FILE:
+
+1. **@analyst call:**
+   - Analyze user requirements and identify affected components
+   - Explore codebase structure relevant to this task
+   - Document key findings (file paths, patterns, dependencies)
+
+2. **@librarian call:**
+   - Search knowledge documents related to the task request
+   - Find relevant past decisions, conventions, or domain knowledge
+   - Note any relevant documentation references
+
+3. **Update working-memory in $HISTORY_FILE:**
+   - Write the gathered context from @analyst and @librarian into the \`working-memory:\` field
+   - Include: relevant files, patterns found, dependencies, key decisions, related docs
+   - This working-memory should be updated throughout the task as you discover new information
+
+**Phase 2: Plan and Execute**
+- Analyze user requirements and write TODO list in tasks
+- Proceed with implementation, updating working-memory as needed when you learn new things
 
 INSTRUCTION
 
