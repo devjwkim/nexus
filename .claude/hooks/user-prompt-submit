@@ -1,0 +1,402 @@
+#!/bin/bash
+
+# Hook that runs automatically when user prompt is submitted
+# Records task requests to INDEX and HISTORY automatically
+
+# jq required
+if ! command -v jq >/dev/null 2>&1; then
+    echo "⚠️  jq is not installed. Please install and try again."
+    echo ""
+    echo "Installation:"
+    echo "  macOS:   brew install jq"
+    echo "  Ubuntu:  sudo apt install jq"
+    echo "  Windows: choco install jq"
+    exit 1
+fi
+
+# Project root directory
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# Load telegram script
+source "$PROJECT_ROOT/.nexus/system/telegram.sh"
+
+# Save stdin to temp file
+INPUT_FILE=$(mktemp)
+cat > "$INPUT_FILE"
+
+# Extract prompt field (empty on parse failure)
+USER_PROMPT=$(jq -r '.prompt // empty' < "$INPUT_FILE" 2>/dev/null) || USER_PROMPT=""
+
+# Clean up temp file
+rm -f "$INPUT_FILE"
+
+MEMORY_BANK="$PROJECT_ROOT/.nexus"
+INDEX_FILE="$MEMORY_BANK/history/history_idx.md"
+HISTORY_DIR="$MEMORY_BANK/history"
+SETTINGS_FILE="$MEMORY_BANK/settings/nexus.properties"
+
+# Create required directories
+mkdir -p "$MEMORY_BANK"
+mkdir -p "$HISTORY_DIR"
+
+# Function to read value from properties file
+get_property() {
+    local key="$1"
+    grep -E "^[[:space:]]*${key}=" "$SETTINGS_FILE" 2>/dev/null | head -n1 | cut -d'=' -f2-
+}
+
+# Function to update value in properties file
+set_property() {
+    local key="$1"
+    local value="$2"
+    local tmp
+    tmp=$(mktemp)
+
+    if [ -f "$SETTINGS_FILE" ]; then
+        awk -v k="$key" -v v="$value" '
+            BEGIN{found=0}
+            $0 ~ "^[[:space:]]*"k"[[:space:]]*=" { print k"="v; found=1; next }
+            { print }
+            END{ if(!found) print k"="v }
+        ' "$SETTINGS_FILE" > "$tmp"
+        mv "$tmp" "$SETTINGS_FILE"
+    else
+        echo "$key=$value" > "$SETTINGS_FILE"
+    fi
+}
+
+# Read SETTINGS file
+AUTHOR=""
+CURRENT_INDEX=""
+STRICT_RULES=""
+OUTPUT_STYLE=""
+if [ -f "$SETTINGS_FILE" ]; then
+    AUTHOR=$(get_property "project.author")
+    CURRENT_INDEX=$(get_property "global.current_index")
+    CURRENT_COMPLETED=$(get_property "global.current_completed")
+    OUTPUT_STYLE=$(get_property "global.output_style")
+    # Parse global.strict.rule.* individually
+    STRICT_RULES=""
+    while IFS= read -r line; do
+        value=$(echo "$line" | cut -d'=' -f2-)
+        STRICT_RULES="${STRICT_RULES}- ${value}"$'\n'
+    done < <(grep '^global.strict.rule.' "$SETTINGS_FILE" | sort -t. -k4,4n)
+fi
+
+# Validate AUTHOR (required, alphanumeric within 20 chars)
+if [ -z "$AUTHOR" ]; then
+    echo "⚠️  project.author is empty. Please set it in $SETTINGS_FILE."
+    exit 1
+fi
+if ! echo "$AUTHOR" | grep -qE '^[a-zA-Z0-9]{1,20}$'; then
+    echo "⚠️  project.author must be alphanumeric within 20 characters."
+    echo "   Current value: $AUTHOR"
+    echo "   File: $SETTINGS_FILE"
+    exit 1
+fi
+
+# Function to update current_index
+update_current_index() {
+    local new_index="$1"
+    set_property "global.current_index" "$new_index"
+}
+
+# Ignore empty prompt
+if [ -z "$USER_PROMPT" ]; then
+    exit 0
+fi
+
+# Check which one: ~!, ~@, ~#
+if [[ "$USER_PROMPT" =~ ^~@ ]]; then
+    # Completion mode
+    MODE="complete"
+    USER_PROMPT="${USER_PROMPT#~@}"
+    USER_PROMPT="${USER_PROMPT# }"
+elif [[ "$USER_PROMPT" =~ ^~! ]]; then
+    # New task creation mode
+    MODE="create"
+    USER_PROMPT="${USER_PROMPT#~!}"
+    USER_PROMPT="${USER_PROMPT# }"
+elif [[ "$USER_PROMPT" =~ ^~# ]]; then
+    # Test mode
+    MODE="test"
+    USER_PROMPT="${USER_PROMPT#~#}"
+    USER_PROMPT="${USER_PROMPT# }"
+else
+    # Ignore unrelated prompts
+    exit 0
+fi
+
+# Generate current timestamp
+TIMESTAMP=$(date "+%Y-%m-%d %H:%M:%S")
+
+# Create INDEX file if not exists
+if [ ! -f "$INDEX_FILE" ]; then
+    touch "$INDEX_FILE"
+fi
+
+if [ "$MODE" = "create" ]; then
+    # === New task creation mode ===
+
+    # Warn if previous task is not completed (but continue with task)
+    PREV_INCOMPLETE_NOTICE=""
+    if [ -n "$CURRENT_INDEX" ] && [ "$CURRENT_COMPLETED" = "n" ]; then
+        PREV_INCOMPLETE_NOTICE="⚠️ Previous task #$CURRENT_INDEX was not completed. (Ignoring and starting new task)"
+    fi
+
+    # If USER_PROMPT is empty, check _custom_prompt.txt then ask
+    CUSTOM_PROMPT_FILE="$MEMORY_BANK/_custom_prompt.txt"
+    if [ -z "$USER_PROMPT" ]; then
+        if [ -f "$CUSTOM_PROMPT_FILE" ]; then
+            CUSTOM_PROMPT_CONTENT=$(cat "$CUSTOM_PROMPT_FILE")
+            if [ -n "$CUSTOM_PROMPT_CONTENT" ]; then
+                # If CUSTOM_PROMPT exists, ask Claude to confirm with user (don't issue task number)
+                cat << ASKFIRST
+
+⚠️ **Task content is empty**
+
+Found the following content in _custom_prompt.txt:
+\`\`\`
+$CUSTOM_PROMPT_CONTENT
+\`\`\`
+
+Ask the user if they want to use this content.
+- **Use**: Tell them to run again with \`~! $CUSTOM_PROMPT_CONTENT\`
+- **Don't use**: Tell them to run \`~! <task content>\` with their desired task content
+
+ASKFIRST
+                exit 0
+            fi
+        fi
+        # If no CUSTOM_PROMPT either, show guide
+        echo "⚠️  Please enter task content. Example: ~! Analyze project"
+        exit 0
+    fi
+
+    # Truncate if prompt is too long (first 100 chars)
+    if [ ${#USER_PROMPT} -gt 100 ]; then
+        REQUEST_TITLE="${USER_PROMPT:0:97}..."
+    else
+        REQUEST_TITLE="$USER_PROMPT"
+    fi
+
+    # Generate timestamp-based ID (format: author_YYYYMMDDHHMMSS_xxx)
+    TS=$(date +"%Y%m%d%H%M%S")
+    # Replace with random 3 digits
+    MS=$(printf "%03d" $((RANDOM % 1000)))
+    TASK_ID="${AUTHOR}_${TS}_${MS}"
+
+    # Add new entry to INDEX
+    echo "#$TASK_ID [$TIMESTAMP] $REQUEST_TITLE" >> "$INDEX_FILE"
+
+    # Create new file in HISTORY folder (YAML format)
+    HISTORY_FILE="$HISTORY_DIR/$TASK_ID.yaml"
+
+    # Update current_index to new task number, completed=n
+    update_current_index "$TASK_ID"
+    set_property "global.current_completed" "n"
+    CURRENT_INDEX="$TASK_ID"
+
+    # Create file (header part)
+    cat > "$HISTORY_FILE" << EOF
+id: "$TASK_ID"
+timestamp: "$TIMESTAMP"
+requester: "$AUTHOR"
+request: |
+EOF
+
+    # Add USER_PROMPT (YAML multiline block, 2-space indent)
+    printf '%s\n' "$USER_PROMPT" | awk '{print "  "$0}' >> "$HISTORY_FILE"
+
+    # Add remaining fields
+    cat >> "$HISTORY_FILE" << 'EOF'
+
+tasks: []
+
+summary: ""
+
+files: []
+
+commit: ""
+EOF
+
+    # Send telegram notification (directly from hook)
+    tg_send_with_header "📝 AI Task Started" "Task ID: #$TASK_ID
+Requester: $AUTHOR
+Time: $TIMESTAMP
+Content: $REQUEST_TITLE"
+
+    # Knowledge document index path
+    NOTE_INDEX="$MEMORY_BANK/note/index.md"
+    NOTE_DIR="$MEMORY_BANK/note"
+
+    # Instruct Claude to start task
+    cat << INSTRUCTION
+
+$([ -n "$PREV_INCOMPLETE_NOTICE" ] && echo "$PREV_INCOMPLETE_NOTICE
+")📝 Task Started (#$TASK_ID)
+File: $HISTORY_FILE
+$([ -n "$AUTHOR" ] && echo "Requester: [$AUTHOR]")
+
+$([ -n "$STRICT_RULES" ] && echo "**Global Strict Rules (must follow):**
+$STRICT_RULES
+")
+$([ -n "$OUTPUT_STYLE" ] && echo "**Response Style:** Respond in $OUTPUT_STYLE style from now on.
+")
+**@librarian call (before starting task):**
+- Search and read knowledge documents related to the task request.
+- Use relevant documents as context if found.
+- Skip if no relevant documents exist.
+
+Response format: Start with "[$AUTHOR], I will execute your instructions. (model: <current model name>, current time: $TIMESTAMP) Task ID: $TASK_ID Regular task: $REQUEST_TITLE"
+
+Analyze user requirements and write TODO list in tasks.
+
+INSTRUCTION
+
+elif [ "$MODE" = "complete" ]; then
+    # === Task completion mode ===
+
+    # current_index required
+    if [ -z "$CURRENT_INDEX" ]; then
+        echo "⚠️  No task to complete. (current_index is empty)"
+        exit 0
+    fi
+    # Validate current_index format (author_YYYYMMDDHHMMSS_xxx)
+    if ! echo "$CURRENT_INDEX" | grep -qE '^[A-Za-z0-9]{1,20}_[0-9]{14}_[0-9]{3}$'; then
+        echo "⚠️  current_index format is invalid: $CURRENT_INDEX"
+        exit 0
+    fi
+    TARGET_ID="$CURRENT_INDEX"
+
+    HISTORY_FILE="$HISTORY_DIR/$TARGET_ID.yaml"
+
+    if [ ! -f "$HISTORY_FILE" ]; then
+        echo "⚠️  No task to complete. (Task #$TARGET_ID file not found)"
+        exit 0
+    fi
+
+    # Check if already completed
+    if [ "$CURRENT_COMPLETED" = "y" ]; then
+        cat << ASKCONFIRM
+
+⚠️ **This task is already completed**
+
+Task ID: #$TARGET_ID
+Status: Completed (current_completed=y)
+
+Ask the user to confirm:
+- **Continue**: Additional commit with same task number (not recommended)
+- **Start new task**: Issue new task number with \`~! <new task content>\`
+
+ASKCONFIRM
+        exit 0
+    fi
+
+    # Update completion flag
+    set_property "global.current_completed" "y"
+
+    # Instruct Claude to complete
+    cat << INSTRUCTION
+
+✅ Task Complete (#$TARGET_ID)
+File: $HISTORY_FILE
+$([ -n "$AUTHOR" ] && echo "Requester: [$AUTHOR]")
+
+$([ -n "$STRICT_RULES" ] && echo "**Global Strict Rules (must follow):**
+$STRICT_RULES
+")
+$([ -n "$OUTPUT_STYLE" ] && echo "**Response Style:** Respond in $OUTPUT_STYLE style from now on.
+")
+Response format: Start with "[$AUTHOR], I will execute your instructions. (model: <current model name>, current time: $TIMESTAMP) Task ID: $TARGET_ID Completion processing"
+
+Perform the following in order:
+1. tasks: Change to [x] completed or [~] cancelled, add actual work done
+2. summary: Overall task summary
+3. files: List of changed/created files
+
+4. **@librarian call**:
+   - Update or create .nexus/note/ documents based on changes from this task
+   - Skip if nothing to document
+
+5. **@deployer call**:
+   - Execute git add, git commit, git push
+   - Include task #$TARGET_ID number in commit message (required - telegram notification trigger)
+
+6. **Add commit info to HISTORY file** (before push):
+   - commit: "<commit hash> <commit message>"
+
+$([ -n "$USER_PROMPT" ] && echo "Completion note: $USER_PROMPT")
+
+INSTRUCTION
+
+elif [ "$MODE" = "test" ]; then
+    # === Test mode ===
+
+    # current_index required
+    if [ -z "$CURRENT_INDEX" ]; then
+        echo "⚠️  No task to test. (current_index is empty)"
+        exit 0
+    fi
+    # Validate current_index format (author_YYYYMMDDHHMMSS_xxx)
+    if ! echo "$CURRENT_INDEX" | grep -qE '^[A-Za-z0-9]{1,20}_[0-9]{14}_[0-9]{3}$'; then
+        echo "⚠️  current_index format is invalid: $CURRENT_INDEX"
+        exit 0
+    fi
+    TARGET_ID="$CURRENT_INDEX"
+
+    HISTORY_FILE="$HISTORY_DIR/$TARGET_ID.yaml"
+    TEST_SETTINGS_FILE="$MEMORY_BANK/settings/playwright_settings.yaml"
+    TEST_INDEX_FILE="$MEMORY_BANK/test/test_idx.md"
+    TEST_ARCHIVE_DIR="$MEMORY_BANK/test"
+
+    if [ ! -f "$HISTORY_FILE" ]; then
+        echo "⚠️  No task to test. (Task #$TARGET_ID file not found)"
+        exit 0
+    fi
+
+    # Read recent task content
+    WORK_CONTENT=$(cat "$HISTORY_FILE")
+
+    # Read test settings
+    TEST_SETTINGS_CONTENT=""
+    if [ -f "$TEST_SETTINGS_FILE" ]; then
+        TEST_SETTINGS_CONTENT=$(cat "$TEST_SETTINGS_FILE")
+    fi
+
+    # Instruct Claude to test
+    cat << INSTRUCTION
+
+🧪 Test Execution (based on task #$TARGET_ID)
+Recent task: $HISTORY_FILE
+$([ -n "$AUTHOR" ] && echo "Requester: [$AUTHOR]")
+
+$([ -n "$STRICT_RULES" ] && echo "**Global Strict Rules (must follow):**
+$STRICT_RULES
+")
+$([ -n "$OUTPUT_STYLE" ] && echo "**Response Style:** Respond in $OUTPUT_STYLE style from now on.
+")
+**Test Settings:**
+\`\`\`yaml
+$TEST_SETTINGS_CONTENT
+\`\`\`
+
+**Recent Task Content:**
+\`\`\`yaml
+$WORK_CONTENT
+\`\`\`
+
+Response format: Start with "[$AUTHOR], I will execute your instructions. (model: <current model name>, current time: $TIMESTAMP) Task ID: $TARGET_ID Test execution"
+
+**@tester call (required):**
+1. Analyze recent task #$TARGET_ID content
+2. Write test scenarios based on playwright_settings.yaml
+3. Execute tests using Playwright MCP
+4. Update test/test_idx.md (add new test entry)
+5. Create test/T*.yaml (detailed test record)
+
+$([ -n "$USER_PROMPT" ] && echo "Additional test requirements: $USER_PROMPT")
+
+INSTRUCTION
+
+fi

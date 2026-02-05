@@ -1,0 +1,90 @@
+#!/bin/bash
+set -euo pipefail
+
+# Project root
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SETTINGS_FILE="$PROJECT_ROOT/.claude/settings.local.json"
+NEXUS_SETTINGS="$PROJECT_ROOT/.nexus/settings/nexus.properties"
+
+# Load telegram script
+source "$PROJECT_ROOT/.nexus/system/telegram.sh"
+
+# Parse PreToolUse hook input (JSON)
+INPUT_JSON="$(cat)"
+TOOL_NAME="$(printf '%s' "$INPUT_JSON" | jq -r '.tool_name // empty')"
+TRANSCRIPT_PATH="$(printf '%s' "$INPUT_JSON" | jq -r '.transcript_path // empty')"
+
+# Exit if empty
+if [ -z "$TOOL_NAME" ]; then
+    exit 0
+fi
+
+# Skip telegram notification for agent internal calls (maintain consistency with main conversation)
+if [[ "$TRANSCRIPT_PATH" == *"/subagents/"* ]]; then
+    exit 0
+fi
+
+# Process only tools that require user response
+case "$TOOL_NAME" in
+    Edit|Write|Bash|AskUserQuestion)
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+
+# ========== Check if in regular task (telegram notification condition) ==========
+# Only send telegram notification when current_index exists and current_completed=n
+get_property() {
+    local key="$1"
+    grep -E "^[[:space:]]*${key}=" "$NEXUS_SETTINGS" 2>/dev/null | head -n1 | cut -d'=' -f2-
+}
+
+CURRENT_INDEX="$(get_property 'global.current_index')"
+CURRENT_COMPLETED="$(get_property 'global.current_completed')"
+
+# Skip telegram notification if not in regular task
+if [ -z "$CURRENT_INDEX" ] || [ "$CURRENT_COMPLETED" = "y" ]; then
+    exit 0
+fi
+
+# Extract parameters by tool
+FILE_PATH="$(printf '%s' "$INPUT_JSON" | jq -r '.tool_input.file_path // empty')"
+COMMAND="$(printf '%s' "$INPUT_JSON" | jq -r '.tool_input.command // empty')"
+QUESTION="$(printf '%s' "$INPUT_JSON" | jq -r '.tool_input.questions[0].question // empty')"
+
+# ========== Save to single Pending file (telegram_bot.py sends after 30 seconds) ==========
+PENDING_FILE="$PROJECT_ROOT/.nexus/system/pending.json"
+
+case "$TOOL_NAME" in
+    Edit)
+        REL_PATH="$(echo "$FILE_PATH" | sed "s|^$PROJECT_ROOT/||")"
+        jq -n --arg msg "Edit: $REL_PATH" \
+            '{timestamp: now, message: $msg, buttons: ["1) Yes:1", "2) Allow:2", "3) No:3"]}' > "$PENDING_FILE"
+        ;;
+    Write)
+        REL_PATH="$(echo "$FILE_PATH" | sed "s|^$PROJECT_ROOT/||")"
+        jq -n --arg msg "Write: $REL_PATH" \
+            '{timestamp: now, message: $msg, buttons: ["1) Yes:1", "2) Allow:2", "3) No:3"]}' > "$PENDING_FILE"
+        ;;
+    Bash)
+        jq -n --arg msg "Bash: $COMMAND" \
+            '{timestamp: now, message: $msg, buttons: ["1) Yes:1", "2) Allow:2", "3) No:3"]}' > "$PENDING_FILE"
+        ;;
+    AskUserQuestion)
+        OPTIONS_JSON="$(printf '%s' "$INPUT_JSON" | jq -r '.tool_input.questions[0].options // []')"
+        OPTIONS_COUNT="$(printf '%s' "$OPTIONS_JSON" | jq -r 'length')"
+
+        BUTTONS_ARR="["
+        for ((i=0; i<OPTIONS_COUNT; i++)); do
+            LABEL="$(printf '%s' "$OPTIONS_JSON" | jq -r ".[$i].label")"
+            NUM=$((i+1))
+            [ $i -gt 0 ] && BUTTONS_ARR="$BUTTONS_ARR,"
+            BUTTONS_ARR="$BUTTONS_ARR\"${NUM}) ${LABEL}:${NUM}\""
+        done
+        BUTTONS_ARR="$BUTTONS_ARR]"
+
+        jq -n --arg msg "AskUserQuestion: $QUESTION" --argjson buttons "$BUTTONS_ARR" \
+            '{timestamp: now, message: $msg, buttons: $buttons}' > "$PENDING_FILE"
+        ;;
+esac

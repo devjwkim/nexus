@@ -1,0 +1,30 @@
+# macOS
+.DS_Store
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Node modules (created when running MCP)
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+
+# Environment variables
+.env
+.env.local
+
+# Local settings (contains personal permissions)
+.claude/settings.local.json
+
+# Runtime files
+.nexus/system/bot.pid
+.nexus/system/buffer.txt
+.nexus/system/telegram_bot.log
+.nexus/system/pending.json
+
+# History files (user-specific)
+.nexus/history/*.yaml

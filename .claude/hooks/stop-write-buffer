@@ -1,0 +1,99 @@
+#!/bin/bash
+set -euo pipefail
+
+# Project root
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+BUFFER_FILE="$PROJECT_ROOT/.nexus/system/buffer.txt"
+PENDING_FILE="$PROJECT_ROOT/.nexus/system/pending.json"
+
+# Load telegram script
+source "$PROJECT_ROOT/.nexus/system/telegram.sh"
+
+# Clear Pending (task completed, notification not needed)
+: > "$PENDING_FILE" 2>/dev/null || true
+
+# Extract transcript_path from Stop hook input (JSON)
+INPUT_JSON="$(cat)"
+TRANSCRIPT_PATH="$(printf '%s' "$INPUT_JSON" | jq -r '.transcript_path // empty')"
+
+# Exit if no transcript
+if [ -z "$TRANSCRIPT_PATH" ] || [ ! -f "$TRANSCRIPT_PATH" ]; then
+  exit 0
+fi
+
+# Extract entire turn: full record from last user message with actual text input to end
+TURN_CONTENT="$(
+  tail -n 2000 "$TRANSCRIPT_PATH" \
+  | jq -rs '
+      # Function: check if content has actual text
+      def has_user_text:
+        if type == "string" then (. != "")
+        elif type == "array" then any(.[]; .type == "text" and (.text | length) > 0)
+        else false
+        end;
+
+      # Find index of last user message with actual text input
+      (to_entries | map(select(
+        .value.message.role == "user" and
+        (.value.message.content | has_user_text)
+      )) | last | .key) as $last_user_idx
+
+      # Extract user message
+      | (if $last_user_idx then
+          .[$last_user_idx].message.content |
+          if type == "string" then .
+          else [.[]? | select(.type == "text") | .text] | join("\n")
+          end
+        else "" end) as $user_msg
+
+      # Full record of all messages after (user tool_result + assistant all)
+      | (if $last_user_idx then
+          [.[$last_user_idx + 1:][] |
+            if .message.role == "assistant" then
+              .message.content |
+              if type == "string" then .
+              else [.[]? |
+                if .type == "text" then .text
+                elif .type == "tool_use" then "\n━━━ [Tool: " + .name + "] ━━━\n"
+                else ""
+                end
+              ] | map(select(. != "")) | join("\n")
+              end
+            elif .message.role == "user" then
+              .message.content |
+              if type == "array" then
+                [.[]? | select(.type == "tool_result") |
+                  "\n[Tool Result]\n" + ((.content // "")[0:800]) + "\n"
+                ] | join("")
+              else ""
+              end
+            else ""
+            end
+          ] | map(select(. != "")) | join("\n")
+        else "" end) as $rest_msgs
+
+      # Combine result
+      | "## USER\n" + ($user_msg // "") + "\n\n## ASSISTANT\n" + ($rest_msgs // "")
+    '
+)"
+
+# Exit if empty
+if [ -z "$TURN_CONTENT" ] || [ "$TURN_CONTENT" = "## USER
+
+## ASSISTANT
+" ]; then
+  exit 0
+fi
+
+TS="$(date '+%Y-%m-%d %H:%M:%S')"
+
+# Overwrite
+cat > "$BUFFER_FILE" <<EOF
+[$TS]
+$TURN_CONTENT
+EOF
+
+# Send entire buffer to telegram (HTML code block)
+if [ -n "$TURN_CONTENT" ]; then
+    tg_send_code "⚡ Processing Complete" "$TURN_CONTENT" || true
+fi

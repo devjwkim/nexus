@@ -1,0 +1,132 @@
+# Test Settings (Generic)
+
+test_config:
+  default_timeout: 30000  # 30 seconds
+  screenshot_on_failure: true
+  video_on_failure: false
+  retry_failed_tests: 1
+
+browsers:
+  - name: "chromium"
+    headless: true
+    viewport:
+      width: 1920
+      height: 1080
+  - name: "firefox"
+    headless: true
+    viewport:
+      width: 1920
+      height: 1080
+  - name: "webkit"
+    headless: true
+    viewport:
+      width: 1920
+      height: 1080
+
+# E2E Test Settings
+e2e:
+  base_url: ""  # Set per project
+  wait_for_navigation: true
+  screenshot_dir: "test-results/screenshots"
+  video_dir: "test-results/videos"
+
+# API Test Settings
+api:
+  base_url: ""  # Set per project
+  timeout: 10000
+  headers:
+    Content-Type: "application/json"
+    Accept: "application/json"
+
+# Test Scenario Templates
+scenario_templates:
+  login:
+    - "Open browser"
+    - "Navigate to login page"
+    - "Enter username"
+    - "Enter password"
+    - "Click login button"
+    - "Verify login success"
+
+  form_submission:
+    - "Navigate to form page"
+    - "Fill required fields"
+    - "Click submit button"
+    - "Verify success message"
+
+  navigation:
+    - "Navigate to main page"
+    - "Click navigation menu"
+    - "Verify page transition"
+    - "Verify content loaded"
+
+# Test Checklist
+test_checklist:
+  functional:
+    - "Verify main functionality"
+    - "Verify error handling"
+    - "Verify data validation"
+
+  ui:
+    - "Verify layout display"
+    - "Verify responsive design"
+    - "Verify browser compatibility"
+
+  performance:
+    - "Page load time"
+    - "API response time"
+    - "Memory usage"
+
+  security:
+    - "Verify authentication/authorization"
+    - "Verify input validation"
+    - "Verify XSS/CSRF protection"
+
+# Common Selectors (Customize per project)
+selectors:
+  login:
+    username: "#username"
+    password: "#password"
+    submit: "button[type='submit']"
+
+  navigation:
+    menu: "nav"
+    home: "a[href='/']"
+    logout: "button.logout"
+
+# Test Data (Sample)
+test_data:
+  valid_user:
+    username: "test@example.com"
+    password: "TestPassword123!"
+
+  invalid_user:
+    username: "invalid@example.com"
+    password: "wrong"
+
+  edge_cases:
+    empty_string: ""
+    long_string: "a" * 1000
+    special_chars: "!@#$%^&*()"
+    sql_injection: "' OR '1'='1"
+    xss_payload: "<script>alert('xss')</script>"
+
+# Playwright MCP Command Reference
+playwright_commands:
+  navigate: "Navigate to page"
+  click: "Click element"
+  fill: "Fill input field"
+  screenshot: "Capture screenshot"
+  wait: "Wait for element"
+  evaluate: "Execute JavaScript"
+
+# Test Result Criteria
+pass_criteria:
+  - "All scenarios PASS"
+  - "No Critical/High bugs"
+  - "Expected results match actual results"
+
+fail_criteria:
+  - "One or more scenarios FAIL"
+  - "Critical/High bugs found"
+  - "Expected results do not match actual results"

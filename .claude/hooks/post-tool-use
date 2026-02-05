@@ -1,0 +1,45 @@
+#!/bin/bash
+
+# PostToolUse hook:
+# 1. Delete pending.json when tool executes (user approved, notification not needed)
+# 2. Send telegram after git push if task number exists
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+PENDING_FILE="$PROJECT_ROOT/.nexus/system/pending.json"
+LOCK_FILE="/tmp/claude_tg_push_lock"
+
+# Clear pending (tool executed, notification not needed)
+: > "$PENDING_FILE" 2>/dev/null || true
+
+# Read tool_input from stdin
+INPUT=$(cat)
+TOOL_INPUT=$(echo "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null)
+
+# Check if git push is at the end of command (standalone or after &&)
+if [[ "$TOOL_INPUT" =~ (^|&&[[:space:]]*)git[[:space:]]+push([[:space:]]|$) ]]; then
+    # Prevent duplicate sends (block within 5 seconds)
+    if [ -f "$LOCK_FILE" ]; then
+        LOCK_TIME=$(cat "$LOCK_FILE")
+        NOW=$(date +%s)
+        if [ $((NOW - LOCK_TIME)) -lt 5 ]; then
+            exit 0
+        fi
+    fi
+    date +%s > "$LOCK_FILE"
+    # Extract task number from recent commit message
+    COMMIT_MSG=$(git -C "$PROJECT_ROOT" log -1 --pretty=%B 2>/dev/null)
+
+    # Task number pattern: #author_YYYYMMDDHHMMSS_xxx
+    if [[ "$COMMIT_MSG" =~ \#([a-zA-Z0-9]+_[0-9]{14}_[0-9]{3}) ]]; then
+        TASK_ID="${BASH_REMATCH[1]}"
+        HISTORY_FILE="$PROJECT_ROOT/.nexus/history/${TASK_ID}.yaml"
+
+        if [ -f "$HISTORY_FILE" ]; then
+            # Load telegram script and send
+            source "$PROJECT_ROOT/.nexus/system/telegram.sh"
+            tg_send_with_header "✅ AI Task Complete" "$(cat "$HISTORY_FILE")"
+        fi
+    fi
+fi
+
+exit 0
