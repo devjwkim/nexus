@@ -49,7 +49,7 @@ def get_property(key, settings_file=None):
 # Load settings
 BOT_TOKEN = get_property("project.bot.token")
 CHAT_ID = get_property("project.bot.chatid")
-TMUX_SESSION = get_property("project.bot.tmux.session") or "claude"
+TMUX_SESSION = get_property("project.name") or "claude"
 
 if not BOT_TOKEN or not CHAT_ID:
     print("❌ Configuration error: Check project.bot.token, project.bot.chatid")
@@ -68,6 +68,9 @@ bot = telebot.TeleBot(BOT_TOKEN)
 
 # Store processed callback message IDs (prevent duplicates)
 processed_callbacks = set()
+
+# Claude input waiting state
+waiting_for_claude_input = False
 
 # ========== Pending File Monitoring (single file) ==========
 def pending_monitor():
@@ -226,15 +229,15 @@ def cmd_yes(message):
     else:
         bot.reply_to(message, f"❌ Failed: {msg}")
 
-# /allow, /2 - Select option 2
-@bot.message_handler(commands=['allow', 'a', '2'])
-def cmd_allow(message):
+# /2 - Select option 2
+@bot.message_handler(commands=['2'])
+def cmd_2(message):
     if not is_authorized(message):
         return
 
     success, msg = send_to_tmux("2")
     if success:
-        bot.reply_to(message, "✅ Option 2 (Allow for session) selected\n⏳ Processing...")
+        bot.reply_to(message, "✅ Option 2 selected\n⏳ Processing...")
     else:
         bot.reply_to(message, f"❌ Failed: {msg}")
 
@@ -265,22 +268,25 @@ def cmd_4(message):
 # /claude <message> - Direct input to Claude
 @bot.message_handler(commands=['claude', 'c'])
 def cmd_claude(message):
+    global waiting_for_claude_input
     if not is_authorized(message):
         return
 
     # Extract message after command
     text = message.text.split(maxsplit=1)
     if len(text) < 2:
-        bot.reply_to(message, "Usage: /claude <message>")
+        # No message, enter waiting mode
+        waiting_for_claude_input = True
+        bot.reply_to(message, "✏️ Enter message to send to Claude:", reply_markup=get_main_keyboard())
         return
 
     user_input = text[1]
     success, msg = send_to_tmux(user_input)
 
     if success:
-        bot.reply_to(message, f"✅ Sent: {user_input[:50]}...\n⏳ Processing...")
+        bot.reply_to(message, f"✅ Sent: {user_input[:50]}...\n⏳ Processing...", reply_markup=get_main_keyboard())
     else:
-        bot.reply_to(message, f"❌ Failed: {msg}")
+        bot.reply_to(message, f"❌ Failed: {msg}", reply_markup=get_main_keyboard())
 
 # /tail - Last 2000 characters of Claude CLI screen
 @bot.message_handler(commands=['tail', 't'])
@@ -345,6 +351,21 @@ def cmd_status(message):
     else:
         bot.reply_to(message, f"❌ tmux session '{TMUX_SESSION}' not found")
 
+# Create keyboard buttons
+def get_main_keyboard():
+    """Create main keyboard buttons"""
+    keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=False)
+    keyboard.row(
+        types.KeyboardButton("1"),
+        types.KeyboardButton("2"),
+        types.KeyboardButton("3"),
+        types.KeyboardButton("4"),
+        types.KeyboardButton("ST"),
+        types.KeyboardButton("TL"),
+        types.KeyboardButton("CLD")
+    )
+    return keyboard
+
 # /help - Help
 @bot.message_handler(commands=['help', 'start'])
 def cmd_help(message):
@@ -353,19 +374,53 @@ def cmd_help(message):
 
     help_text = """🤖 Claude Code Remote Control
 
-**Selection Commands:**
-/yes, /1 - Select option 1 (Yes)
-/allow, /2 - Select option 2 (Allow)
-/no, /3 - Select option 3 (No)
-/4 - Select option 4
-
-**Other:**
-/claude <message> - Direct input to Claude
-/tail - Last 2000 characters of screen
-/status - Check tmux session status
-/help - Help
+**Select:** 1, 2, 3, 4
+**Status:** ST (status)
+**Log:** TL (tail)
+**Input:** CLD (claude)
 """
-    bot.reply_to(message, help_text, parse_mode='Markdown')
+    bot.reply_to(message, help_text, parse_mode='Markdown', reply_markup=get_main_keyboard())
+
+# Handle text messages (buttons and Claude input waiting)
+@bot.message_handler(func=lambda message: True)
+def handle_text(message):
+    global waiting_for_claude_input
+    if not is_authorized(message):
+        return
+
+    text = message.text.strip()
+
+    # Handle button commands
+    if text in ["1", "2", "3", "4"]:
+        success, msg = send_to_tmux(text)
+        if success:
+            bot.reply_to(message, f"✅ Option {text} selected\n⏳ Processing...", reply_markup=get_main_keyboard())
+        else:
+            bot.reply_to(message, f"❌ Failed: {msg}", reply_markup=get_main_keyboard())
+        return
+
+    if text.lower() == "tl":
+        cmd_tail(message)
+        return
+
+    if text.lower() == "st":
+        cmd_status(message)
+        return
+
+    if text.lower() == "cld":
+        waiting_for_claude_input = True
+        bot.reply_to(message, "✏️ Enter message to send to Claude:", reply_markup=get_main_keyboard())
+        return
+
+    # If waiting for Claude input, send message to Claude
+    if waiting_for_claude_input:
+        waiting_for_claude_input = False
+        success, msg = send_to_tmux(text)
+
+        if success:
+            bot.reply_to(message, f"✅ Sent: {text[:50]}...\n⏳ Processing...", reply_markup=get_main_keyboard())
+        else:
+            bot.reply_to(message, f"❌ Failed: {msg}", reply_markup=get_main_keyboard())
 
 if __name__ == "__main__":
     log("🤖 Telegram bot started")

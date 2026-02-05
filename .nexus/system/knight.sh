@@ -3,8 +3,11 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+SETTINGS_FILE="$SCRIPT_DIR/../settings/nexus.properties"
 
-SESSION_NAME="claude"
+# Get session name from project.name
+SESSION_NAME=$(grep "^project.name=" "$SETTINGS_FILE" 2>/dev/null | cut -d'=' -f2)
+SESSION_NAME="${SESSION_NAME:-claude}"  # Default: claude
 VENV_DIR="$PROJECT_ROOT/venv"
 BOT_SCRIPT="$SCRIPT_DIR/telegram_bot.py"
 PID_FILE="$SCRIPT_DIR/bot.pid"
@@ -86,9 +89,9 @@ echo "📱 Telegram bot: PID $BOT_PID"
 echo "   Log: tail -f $LOG_FILE"
 echo "   Stop: kill $BOT_PID"
 echo ""
-echo "💻 Claude Code Knight: tmux session 'claude'"
+echo "💻 Claude Code Knight: tmux session '$SESSION_NAME'"
 echo "   Detach: Ctrl+B, D"
-echo "   Stop: tmux kill-session -t claude"
+echo "   Stop: tmux kill-session -t $SESSION_NAME"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
@@ -98,6 +101,6 @@ if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
     tmux attach -t "$SESSION_NAME"
 else
     echo "❌ Failed to connect to tmux session. Run manually:"
-    echo "   tmux new-session -s claude"
+    echo "   tmux new-session -s $SESSION_NAME"
     echo "   claude"
 fi

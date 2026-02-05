@@ -111,12 +111,27 @@ Control Claude Code from Telegram even when away from PC.
   <img src=".nexus/assets/telegram_2.png" width="300" alt="Telegram Task Complete"/>
 </p>
 
+### Keyboard Buttons
+
+Quick access buttons for common actions:
+
+<p align="center">
+  <img src=".nexus/assets/telegram_3.png" width="350" alt="Telegram Keyboard Buttons"/>
+</p>
+
+| Button | Action |
+|--------|--------|
+| `1`, `2`, `3`, `4` | Select option |
+| `ST` | Check status |
+| `TL` | View tail (last 2000 chars) |
+| `CLD` | Enter Claude input mode |
+
 ### Commands
 
 | Command | Action |
 |---------|--------|
 | `/yes`, `/1` | Select Yes |
-| `/allow`, `/2` | Select Allow for session |
+| `/2` | Select option 2 |
 | `/no`, `/3` | Select No |
 | `/claude <message>` | Direct input to Claude |
 | `/tail` | View current screen (last 2000 chars) |
