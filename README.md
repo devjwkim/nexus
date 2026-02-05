@@ -99,6 +99,11 @@ Agent files: `.claude/agents/*.md`
 
 Control Claude Code from Telegram even when away from PC.
 
+<p align="center">
+  <img src=".nexus/assets/telegram_1.png" width="300" alt="Telegram Permission Request"/>
+  <img src=".nexus/assets/telegram_2.png" width="300" alt="Telegram Task Complete"/>
+</p>
+
 ### Commands
 
 | Command | Action |
@@ -297,6 +302,10 @@ commit: "abc1234 feat: Commit message"
 ## Obsidian Integration (Optional)
 
 Link `.nexus/note` with Obsidian vault via symbolic link:
+
+<p align="center">
+  <img src=".nexus/assets/obsidian_1.png" width="600" alt="Obsidian Integration"/>
+</p>
 
 ```bash
 ./.nexus/system/link_note.sh
