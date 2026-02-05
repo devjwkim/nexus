@@ -329,3 +329,19 @@ mv .nexus/note "~/Library/CloudStorage/GoogleDrive-.../Obsidian/ProjectName/"
 # 3. Create symbolic link
 ln -s "~/Library/CloudStorage/GoogleDrive-.../Obsidian/ProjectName/note" .nexus/note
 ```
+
+---
+
+## Contributing
+
+Contributions are welcome!
+
+If you have ideas, improvements, or bug fixes, please open an issue or submit a pull request.
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
+
+---
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
