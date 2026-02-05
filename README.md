@@ -2,6 +2,8 @@
 
 Claude Code Task Management Template
 
+[![Contributing](https://img.shields.io/badge/contributions-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
 ---
 
 ## Key Features
