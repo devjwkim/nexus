@@ -1,6 +1,10 @@
-# Nexus
+<p align="center">
+  <img src=".nexus/assets/nexus_logo.png" width="400" alt="Nexus Logo"/>
+</p>
 
-Claude Code Task Management Template
+<h1 align="center">Nexus</h1>
+
+<p align="center">Claude Code Task Management Template</p>
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Contributing](https://img.shields.io/badge/contributions-welcome-brightgreen.svg)](CONTRIBUTING.md)
