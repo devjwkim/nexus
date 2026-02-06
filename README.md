@@ -146,7 +146,9 @@ Notification after 30 seconds of tool permission wait:
 ~! start task → Permission request → 30s wait → Telegram notification → /yes click → proceed
 ```
 
-No notifications are sent during regular conversations (outside regular tasks).
+- Auto-detects if the question is still active on tmux screen before sending
+- Expired questions are automatically invalidated (prevents stale button clicks)
+- No notifications are sent during regular conversations (outside regular tasks)
 
 ### tmux Session Management
 

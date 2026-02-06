@@ -20,6 +20,9 @@ node_modules/
 # Local settings (contains personal permissions)
 .claude/settings.local.json
 
+# Personal agent (not shared)
+.claude/agents/컨버터.md
+
 # Runtime files
 .nexus/system/bot.pid
 .nexus/system/buffer.txt

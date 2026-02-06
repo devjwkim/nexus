@@ -1,5 +1,5 @@
 #!/bin/bash
-set -euo pipefail
+# Removed set -euo pipefail - prevents script exit on jq parsing errors
 
 # Project root
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -63,7 +63,12 @@ TURN_CONTENT="$(
               .message.content |
               if type == "array" then
                 [.[]? | select(.type == "tool_result") |
-                  "\n[Tool Result]\n" + ((.content // "")[0:800]) + "\n"
+                  "\n[Tool Result]\n" + (
+                    if (.content | type) == "string" then (.content // "")[0:800]
+                    elif (.content | type) == "array" then ([.content[]? | select(.type == "text") | .text] | join("\n"))[0:800]
+                    else ""
+                    end
+                  ) + "\n"
                 ] | join("")
               else ""
               end

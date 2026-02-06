@@ -32,30 +32,10 @@ All responses must **strictly follow** the format below.
 
 ## QUESTION Format (Mandatory)
 
-**⚠️ Required: Questions with options must use the `AskUserQuestion` tool.**
-- Don't ask as text, call the tool to provide arrow-key selection UI.
+**⚠️ QUESTION is ONLY possible via the `AskUserQuestion` tool. Never output questions as text.**
+- If a question is needed, always call the `AskUserQuestion` tool.
+- Outputting `[TYPE:QUESTION` as text is a rule violation.
 - After tool call, output progress in INFO format based on result.
-
-**Use text format below only when AskUserQuestion tool cannot be used:**
-
-[TYPE:QUESTION | TIME:...]
-Q: <Core question to ask user, 1 sentence>
-
-CONTEXT:
-- <1-3 lines of background for the question, or "- (none)">
-
-OPTIONS:
-1) <option1>
-2) <option2>
-...
-(If no options: OPTIONS: NONE)
-
-RECOMMENDED:
-- Recommended option number if possible
-- "(none)" if not applicable
-
-ANSWER_FORMAT:
-ANSWER: <number or free text>
 
 ---
 

@@ -61,7 +61,7 @@ CHAT_ID = int(CHAT_ID)
 script_dir = os.path.dirname(os.path.abspath(__file__))
 PENDING_FILE = os.path.join(script_dir, "pending.json")
 
-# Wait time (seconds)
+# Wait time (seconds) - send after this delay if question is on tmux screen
 PENDING_WAIT_SECONDS = 30
 
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -72,52 +72,139 @@ processed_callbacks = set()
 # Claude input waiting state
 waiting_for_claude_input = False
 
+# Question index management (reset to 0 on startup)
+current_question_idx = 0
+# Question content storage (idx -> question keyword)
+question_keywords = {}
+# Last sent question content (for detecting new questions and invalidating old idx)
+last_sent_msg = ""
+
+# ========== Capture tmux screen and check for question messages ==========
+def get_tmux_screen():
+    """Capture tmux screen (remove ANSI codes)"""
+    try:
+        result = subprocess.run(
+            ['tmux', 'has-session', '-t', TMUX_SESSION],
+            capture_output=True
+        )
+        if result.returncode != 0:
+            return ""
+
+        result = subprocess.run(
+            ['tmux', 'capture-pane', '-t', TMUX_SESSION, '-p', '-S', '-100'],
+            capture_output=True, text=True
+        )
+        content = result.stdout
+
+        # Remove ANSI escape codes
+        import re
+        content = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', content)
+        content = re.sub(r'\x1b\].*?\x07', '', content)
+
+        return content
+    except Exception:
+        return ""
+
+def is_question_on_screen(question_msg):
+    """Check if selection UI is currently active on tmux screen (bottom 5 lines only)"""
+    screen = get_tmux_screen()
+    if not screen:
+        return False
+    # Only check bottom 5 lines (ignore previous UI text in scrollback)
+    bottom = '\n'.join(screen.split('\n')[-5:])
+    return "Esc to cancel" in bottom or "Enter to select" in bottom
+
 # ========== Pending File Monitoring (single file) ==========
 def pending_monitor():
-    """Send telegram notification if pending.json content is older than 15 seconds"""
+    """Send notification if pending.json exists and question is on tmux screen after delay"""
+    global current_question_idx, last_sent_msg
+    pending_start_time = {}  # Wait start time per message
+
     while True:
         try:
             if not os.path.exists(PENDING_FILE):
+                pending_start_time.clear()
                 time.sleep(2)
                 continue
 
             # Check file size (skip if empty)
             if os.path.getsize(PENDING_FILE) == 0:
+                pending_start_time.clear()
                 time.sleep(2)
                 continue
 
             with open(PENDING_FILE, 'r') as f:
                 data = json.load(f)
 
-            # Check if timestamp is older than 15 seconds
-            file_ts = data.get('timestamp', 0)
-            now = time.time()
-            if now - file_ts < PENDING_WAIT_SECONDS:
+            msg_text = data.get('message', '')
+            buttons = data.get('buttons', [])
+
+            if not msg_text:
+                time.sleep(2)
+                continue
+
+            # Check if selection UI is on tmux screen
+            if not is_question_on_screen(msg_text):
+                # No selection UI - reset wait time and clear file (already handled)
+                if msg_text in pending_start_time:
+                    del pending_start_time[msg_text]
+                open(PENDING_FILE, 'w').close()
+                time.sleep(2)
+                continue
+
+            # Record wait start time if on screen
+            if msg_text not in pending_start_time:
+                pending_start_time[msg_text] = time.time()
+                # If previous question was sent and content differs, invalidate immediately
+                if last_sent_msg and msg_text != last_sent_msg:
+                    current_question_idx += 1
+                    log(f"⏭️ New question detected, Q{current_question_idx-1} invalidated → now Q{current_question_idx}")
+                log(f"⏳ Question detected, waiting {PENDING_WAIT_SECONDS}s: {msg_text[:40]}...")
+
+            # Check wait time
+            elapsed = time.time() - pending_start_time[msg_text]
+            if elapsed < PENDING_WAIT_SECONDS:
+                time.sleep(1)
+                continue
+
+            # Before sending: verify question is still on screen
+            if not is_question_on_screen(msg_text):
+                log(f"⏭️ Already answered, skipping send: {msg_text[:40]}...")
+                del pending_start_time[msg_text]
+                open(PENDING_FILE, 'w').close()
                 time.sleep(2)
                 continue
 
             # Send notification
-            msg_text = data.get('message', '')
-            buttons = data.get('buttons', [])
+            try:
+                current_question_idx += 1
+                q_idx = current_question_idx
 
-            if buttons:
-                markup = types.InlineKeyboardMarkup(row_width=len(buttons))
-                btn_list = []
-                for btn in buttons:
-                    if ':' in btn:
-                        label, callback = btn.rsplit(':', 1)
-                        btn_list.append(types.InlineKeyboardButton(label.strip(), callback_data=callback.strip()))
-                if btn_list:
-                    markup.add(*btn_list)
-                    bot.send_message(CHAT_ID, f"⏰ {msg_text}", reply_markup=markup)
+                if buttons:
+                    markup = types.InlineKeyboardMarkup(row_width=len(buttons))
+                    btn_list = []
+                    for btn in buttons:
+                        if ':' in btn:
+                            label, choice = btn.rsplit(':', 1)
+                            # callback_data format: "idx:choice" (e.g., "5:1")
+                            callback_data = f"{q_idx}:{choice.strip()}"
+                            btn_list.append(types.InlineKeyboardButton(label.strip(), callback_data=callback_data))
+                    if btn_list:
+                        markup.add(*btn_list)
+                        result = bot.send_message(CHAT_ID, f"❓ [Q{q_idx}] {msg_text}", reply_markup=markup)
+                    else:
+                        result = bot.send_message(CHAT_ID, f"❓ [Q{q_idx}] {msg_text}")
                 else:
-                    bot.send_message(CHAT_ID, f"⏰ {msg_text}")
-            else:
-                bot.send_message(CHAT_ID, f"⏰ {msg_text}")
+                    result = bot.send_message(CHAT_ID, f"❓ [Q{q_idx}] {msg_text}")
+                # Save question keyword (for callback verification)
+                question_keywords[q_idx] = msg_text.split('\n')[0][:60]
+                last_sent_msg = msg_text
+                log(f"📤 Notification sent: [Q{q_idx}] {msg_text[:50]} (msg_id={result.message_id})")
+            except Exception as send_err:
+                log(f"❌ Notification failed: {send_err}")
 
-            log(f"📤 Pending notification: {msg_text[:50]}")
-
-            # Clear file (send complete)
+            # Clear file and reset wait time
+            del pending_start_time[msg_text]
             open(PENDING_FILE, 'w').close()
 
         except json.JSONDecodeError:
@@ -146,6 +233,23 @@ def send_to_tmux(text, send_enter=True):
         if send_enter:
             subprocess.run(['tmux', 'send-keys', '-t', TMUX_SESSION, 'Enter'], capture_output=True)
         return True, "Sent successfully"
+    except Exception as e:
+        return False, str(e)
+
+def send_key_to_tmux(key):
+    """Send special key to tmux session (Escape, Enter, Up, Down, etc.)"""
+    try:
+        # Check if tmux session exists
+        result = subprocess.run(
+            ['tmux', 'has-session', '-t', TMUX_SESSION],
+            capture_output=True
+        )
+        if result.returncode != 0:
+            return False, f"tmux session '{TMUX_SESSION}' not found"
+
+        # Send special key
+        subprocess.run(['tmux', 'send-keys', '-t', TMUX_SESSION, key], capture_output=True)
+        return True, f"{key} key sent"
     except Exception as e:
         return False, str(e)
 
@@ -180,6 +284,8 @@ def is_authorized(message):
 # Callback query handler (inline buttons)
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
+    global current_question_idx
+
     if call.message.chat.id != CHAT_ID:
         return
 
@@ -189,8 +295,54 @@ def handle_callback(call):
         bot.answer_callback_query(call.id, "⚠️ Already processed")
         return
 
-    # Button data: "1", "2", "3", etc.
-    choice = call.data
+    # Parse button data: "idx:choice" format (e.g., "5:1")
+    callback_data = call.data
+    if ':' in callback_data:
+        q_idx_str, choice = callback_data.split(':', 1)
+        try:
+            q_idx = int(q_idx_str)
+        except ValueError:
+            q_idx = 0
+            choice = callback_data
+    else:
+        # Legacy format compatibility (number only)
+        q_idx = current_question_idx
+        choice = callback_data
+
+    # Condition 1: Check if this is the latest question
+    if q_idx != current_question_idx:
+        log(f"⏰ Expired question: Q{q_idx} (current: Q{current_question_idx})")
+        bot.answer_callback_query(call.id, f"⏰ Expired question.")
+        # Remove buttons
+        try:
+            original_text = call.message.text
+            bot.edit_message_text(
+                f"{original_text}\n\n⏰ Expired question. (Q{q_idx} → current Q{current_question_idx})",
+                call.message.chat.id,
+                msg_id,
+                reply_markup=None
+            )
+        except:
+            pass
+        return
+
+    # Condition 2: Check if selection UI is still active on tmux screen bottom
+    screen = get_tmux_screen()
+    bottom = '\n'.join(screen.split('\n')[-5:]) if screen else ""
+    if "Esc to cancel" not in bottom and "Enter to select" not in bottom:
+        log(f"⏰ Already selected (on PC): Q{q_idx}")
+        bot.answer_callback_query(call.id, "⏰ Already selected on PC.")
+        try:
+            original_text = call.message.text
+            bot.edit_message_text(
+                f"{original_text}\n\n⏰ Already selected on PC.",
+                call.message.chat.id,
+                msg_id,
+                reply_markup=None
+            )
+        except:
+            pass
+        return
 
     # Send arrow keys + Enter to Claude Code selection UI
     success, msg = send_selection_to_tmux(choice)
@@ -198,13 +350,13 @@ def handle_callback(call):
     if success:
         # Mark as processed
         processed_callbacks.add(msg_id)
-        log(f"✅ Button clicked: #{choice}")
-        bot.answer_callback_query(call.id, f"✅ Selected #{choice}")
+        log(f"✅ Button clicked: Q{q_idx} - option {choice}")
+        bot.answer_callback_query(call.id, f"✅ Option {choice} selected")
         # Remove buttons and show selection result
         try:
             original_text = call.message.text
             bot.edit_message_text(
-                f"{original_text}\n\n✅ Selected: #{choice}",
+                f"{original_text}\n\n✅ Selected: option {choice}",
                 call.message.chat.id,
                 msg_id,
                 reply_markup=None
@@ -262,6 +414,19 @@ def cmd_4(message):
     success, msg = send_to_tmux("4")
     if success:
         bot.reply_to(message, "✅ Option 4 selected\n⏳ Processing...")
+    else:
+        bot.reply_to(message, f"❌ Failed: {msg}")
+
+# /esc - Send ESC key
+@bot.message_handler(commands=['esc'])
+def cmd_esc(message):
+    if not is_authorized(message):
+        return
+
+    success, msg = send_key_to_tmux("Escape")
+    if success:
+        log("⎋ ESC key sent")
+        bot.reply_to(message, "⎋ ESC key sent")
     else:
         bot.reply_to(message, f"❌ Failed: {msg}")
 
@@ -375,6 +540,7 @@ def cmd_help(message):
     help_text = """🤖 Claude Code Remote Control
 
 **Select:** 1, 2, 3, 4
+**Cancel:** /esc (ESC key)
 **Status:** ST (status)
 **Log:** TL (tail)
 **Input:** CLD (claude)
@@ -422,11 +588,38 @@ def handle_text(message):
         else:
             bot.reply_to(message, f"❌ Failed: {msg}", reply_markup=get_main_keyboard())
 
+def kill_previous_bot():
+    """Terminate previously running telegram_bot.py processes"""
+    import signal
+    my_pid = os.getpid()
+    try:
+        result = subprocess.run(
+            ['pgrep', '-f', 'telegram_bot.py'],
+            capture_output=True, text=True
+        )
+        for line in result.stdout.strip().split('\n'):
+            if not line:
+                continue
+            pid = int(line.strip())
+            if pid != my_pid:
+                log(f"🔪 Terminating previous bot process: PID {pid}")
+                os.kill(pid, signal.SIGTERM)
+    except Exception as e:
+        log(f"⚠️ Failed to terminate previous process: {e}")
+
 if __name__ == "__main__":
+    kill_previous_bot()
     log("🤖 Telegram bot started")
     log(f"   Session: {TMUX_SESSION}")
     log(f"   Chat ID: {CHAT_ID}")
     log(f"   Wait time: {PENDING_WAIT_SECONDS} seconds")
+
+    # Clear pending.json on startup (remove expired questions from previous session)
+    try:
+        open(PENDING_FILE, 'w').close()
+        log("🗑️ Previous pending cleared")
+    except:
+        pass
 
     # Start pending monitoring thread
     monitor_thread = threading.Thread(target=pending_monitor, daemon=True)

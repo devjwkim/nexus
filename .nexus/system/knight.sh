@@ -26,24 +26,20 @@ if [ ! -d "$VENV_DIR" ]; then
     python3 -m venv "$VENV_DIR"
 fi
 
-# Activate virtual environment
-source "$VENV_DIR/bin/activate"
+# (venv used via direct path, no activation needed)
 
 # Check pyTelegramBotAPI installation
-if ! python3 -c "import telebot" 2>/dev/null; then
+if ! "$VENV_DIR/bin/python3" -c "import telebot" 2>/dev/null; then
     echo "   📦 Installing pyTelegramBotAPI..."
-    pip3 install pyTelegramBotAPI --quiet
+    "$VENV_DIR/bin/pip3" install pyTelegramBotAPI --quiet
 fi
 
-# Terminate existing bot
-if [ -f "$PID_FILE" ]; then
-    OLD_PID=$(cat "$PID_FILE")
-    if kill -0 "$OLD_PID" 2>/dev/null; then
-        echo "   🔄 Terminating existing bot (PID: $OLD_PID)"
-        kill "$OLD_PID" 2>/dev/null
-        sleep 1
-    fi
-fi
+# Terminate all existing bot processes (including other projects)
+for OLD_PID in $(pgrep -f telegram_bot.py 2>/dev/null); do
+    echo "   🔄 Terminating existing bot (PID: $OLD_PID)"
+    kill "$OLD_PID" 2>/dev/null
+done
+sleep 1
 
 # Log rotation
 if [ -f "$LOG_FILE" ]; then
@@ -52,13 +48,10 @@ if [ -f "$LOG_FILE" ]; then
 fi
 
 # Run bot in background
-nohup python3 "$BOT_SCRIPT" >> "$LOG_FILE" 2>&1 &
+nohup "$VENV_DIR/bin/python3" "$BOT_SCRIPT" >> "$LOG_FILE" 2>&1 &
 BOT_PID=$!
 echo "$BOT_PID" > "$PID_FILE"
 echo "   ✅ Bot started (PID: $BOT_PID)"
-
-# Deactivate virtual environment
-deactivate
 
 # ========== 2. tmux + Claude Code ==========
 echo ""

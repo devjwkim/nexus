@@ -1,5 +1,5 @@
 #!/bin/bash
-set -euo pipefail
+# Removed set -euo pipefail - prevents script exit on jq parsing errors
 
 # Project root
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -10,9 +10,9 @@ NEXUS_SETTINGS="$PROJECT_ROOT/.nexus/settings/nexus.properties"
 source "$PROJECT_ROOT/.nexus/system/telegram.sh"
 
 # Parse PreToolUse hook input (JSON)
-INPUT_JSON="$(cat)"
-TOOL_NAME="$(printf '%s' "$INPUT_JSON" | jq -r '.tool_name // empty')"
-TRANSCRIPT_PATH="$(printf '%s' "$INPUT_JSON" | jq -r '.transcript_path // empty')"
+INPUT_JSON="$(cat)" || true
+TOOL_NAME="$(printf '%s' "$INPUT_JSON" | jq -r '.tool_name // empty' 2>/dev/null)" || true
+TRANSCRIPT_PATH="$(printf '%s' "$INPUT_JSON" | jq -r '.transcript_path // empty' 2>/dev/null)" || true
 
 # Exit if empty
 if [ -z "$TOOL_NAME" ]; then
@@ -26,33 +26,73 @@ fi
 
 # Process only tools that require user response
 case "$TOOL_NAME" in
-    Edit|Write|Bash|AskUserQuestion)
+    Edit|Write|Bash|Read|AskUserQuestion)
         ;;
     *)
         exit 0
         ;;
 esac
 
-# ========== Check if in regular task (telegram notification condition) ==========
-# Only send telegram notification when current_index exists and current_completed=n
+# Function to read value from properties file
 get_property() {
     local key="$1"
     grep -E "^[[:space:]]*${key}=" "$NEXUS_SETTINGS" 2>/dev/null | head -n1 | cut -d'=' -f2-
 }
 
-CURRENT_INDEX="$(get_property 'global.current_index')"
-CURRENT_COMPLETED="$(get_property 'global.current_completed')"
+# Extract parameters by tool
+FILE_PATH="$(printf '%s' "$INPUT_JSON" | jq -r '.tool_input.file_path // empty' 2>/dev/null)" || true
+COMMAND="$(printf '%s' "$INPUT_JSON" | jq -r '.tool_input.command // empty' 2>/dev/null)" || true
+QUESTION="$(printf '%s' "$INPUT_JSON" | jq -r '.tool_input.questions[0].question // empty' 2>/dev/null)" || true
 
-# Skip telegram notification if not in regular task
-if [ -z "$CURRENT_INDEX" ] || [ "$CURRENT_COMPLETED" = "y" ]; then
-    exit 0
-fi
+# ========== Save to single Pending file (telegram_bot.py sends after delay) ==========
+PENDING_FILE="$PROJECT_ROOT/.nexus/system/pending.json"
 
-# ========== Working Memory Mandatory Update (output to Claude) ==========
-# Enforce Claude to update working-memory during active task
-HISTORY_FILE="$PROJECT_ROOT/.nexus/history/$CURRENT_INDEX.yaml"
-if [ -f "$HISTORY_FILE" ]; then
-    cat << WMREMINDER
+case "$TOOL_NAME" in
+    Edit)
+        REL_PATH="$(echo "$FILE_PATH" | sed "s|^$PROJECT_ROOT/||")" || REL_PATH="$FILE_PATH"
+        jq -n --arg msg "Edit: $REL_PATH" \
+            '{timestamp: now, message: $msg, buttons: ["1) Yes:1", "2) Allow:2", "3) No:3"]}' > "$PENDING_FILE" 2>/dev/null || true
+        ;;
+    Write)
+        REL_PATH="$(echo "$FILE_PATH" | sed "s|^$PROJECT_ROOT/||")" || REL_PATH="$FILE_PATH"
+        jq -n --arg msg "Write: $REL_PATH" \
+            '{timestamp: now, message: $msg, buttons: ["1) Yes:1", "2) Allow:2", "3) No:3"]}' > "$PENDING_FILE" 2>/dev/null || true
+        ;;
+    Bash)
+        jq -n --arg msg "Bash: $COMMAND" \
+            '{timestamp: now, message: $msg, buttons: ["1) Yes:1", "2) Allow:2", "3) No:3"]}' > "$PENDING_FILE" 2>/dev/null || true
+        ;;
+    Read)
+        REL_PATH="$(echo "$FILE_PATH" | sed "s|^$PROJECT_ROOT/||")" || REL_PATH="$FILE_PATH"
+        jq -n --arg msg "Read: $REL_PATH" \
+            '{timestamp: now, message: $msg, buttons: ["1) Yes:1", "2) Allow:2", "3) No:3"]}' > "$PENDING_FILE" 2>/dev/null || true
+        ;;
+    AskUserQuestion)
+        OPTIONS_JSON="$(printf '%s' "$INPUT_JSON" | jq -r '.tool_input.questions[0].options // []' 2>/dev/null)" || OPTIONS_JSON="[]"
+        OPTIONS_COUNT="$(printf '%s' "$OPTIONS_JSON" | jq -r 'length' 2>/dev/null)" || OPTIONS_COUNT=0
+
+        BUTTONS_ARR="["
+        for ((i=0; i<OPTIONS_COUNT; i++)); do
+            LABEL="$(printf '%s' "$OPTIONS_JSON" | jq -r ".[$i].label" 2>/dev/null)" || LABEL="Option"
+            NUM=$((i+1))
+            [ $i -gt 0 ] && BUTTONS_ARR="$BUTTONS_ARR,"
+            BUTTONS_ARR="$BUTTONS_ARR\"${NUM}) ${LABEL}:${NUM}\""
+        done
+        BUTTONS_ARR="$BUTTONS_ARR]"
+
+        jq -n --arg msg "AskUserQuestion: $QUESTION" --argjson buttons "$BUTTONS_ARR" \
+            '{timestamp: now, message: $msg, buttons: $buttons}' > "$PENDING_FILE" 2>/dev/null || true
+        ;;
+esac
+
+# ========== Working Memory Reminder (only during active task) ==========
+CURRENT_INDEX="$(get_property "global.current_index")" || true
+CURRENT_COMPLETED="$(get_property "global.current_completed")" || true
+
+if [ -n "$CURRENT_INDEX" ] && [ "$CURRENT_COMPLETED" = "n" ]; then
+    HISTORY_FILE="$PROJECT_ROOT/.nexus/history/$CURRENT_INDEX.yaml"
+    if [ -f "$HISTORY_FILE" ]; then
+        cat << WMREMINDER
 <system-reminder>
 **[REQUIRED] Working Memory Update Obligation (Task #$CURRENT_INDEX)**
 
@@ -63,45 +103,5 @@ After this tool execution, you MUST perform the following:
 Failure to update will result in context loss. DO NOT ignore this instruction.
 </system-reminder>
 WMREMINDER
+    fi
 fi
-
-# Extract parameters by tool
-FILE_PATH="$(printf '%s' "$INPUT_JSON" | jq -r '.tool_input.file_path // empty')"
-COMMAND="$(printf '%s' "$INPUT_JSON" | jq -r '.tool_input.command // empty')"
-QUESTION="$(printf '%s' "$INPUT_JSON" | jq -r '.tool_input.questions[0].question // empty')"
-
-# ========== Save to single Pending file (telegram_bot.py sends after 30 seconds) ==========
-PENDING_FILE="$PROJECT_ROOT/.nexus/system/pending.json"
-
-case "$TOOL_NAME" in
-    Edit)
-        REL_PATH="$(echo "$FILE_PATH" | sed "s|^$PROJECT_ROOT/||")"
-        jq -n --arg msg "Edit: $REL_PATH" \
-            '{timestamp: now, message: $msg, buttons: ["1) Yes:1", "2) Allow:2", "3) No:3"]}' > "$PENDING_FILE"
-        ;;
-    Write)
-        REL_PATH="$(echo "$FILE_PATH" | sed "s|^$PROJECT_ROOT/||")"
-        jq -n --arg msg "Write: $REL_PATH" \
-            '{timestamp: now, message: $msg, buttons: ["1) Yes:1", "2) Allow:2", "3) No:3"]}' > "$PENDING_FILE"
-        ;;
-    Bash)
-        jq -n --arg msg "Bash: $COMMAND" \
-            '{timestamp: now, message: $msg, buttons: ["1) Yes:1", "2) Allow:2", "3) No:3"]}' > "$PENDING_FILE"
-        ;;
-    AskUserQuestion)
-        OPTIONS_JSON="$(printf '%s' "$INPUT_JSON" | jq -r '.tool_input.questions[0].options // []')"
-        OPTIONS_COUNT="$(printf '%s' "$OPTIONS_JSON" | jq -r 'length')"
-
-        BUTTONS_ARR="["
-        for ((i=0; i<OPTIONS_COUNT; i++)); do
-            LABEL="$(printf '%s' "$OPTIONS_JSON" | jq -r ".[$i].label")"
-            NUM=$((i+1))
-            [ $i -gt 0 ] && BUTTONS_ARR="$BUTTONS_ARR,"
-            BUTTONS_ARR="$BUTTONS_ARR\"${NUM}) ${LABEL}:${NUM}\""
-        done
-        BUTTONS_ARR="$BUTTONS_ARR]"
-
-        jq -n --arg msg "AskUserQuestion: $QUESTION" --argjson buttons "$BUTTONS_ARR" \
-            '{timestamp: now, message: $msg, buttons: $buttons}' > "$PENDING_FILE"
-        ;;
-esac
