@@ -73,7 +73,7 @@ ${content}
     tg_send "$message"
 }
 
-# Send as HTML code block (<pre> tag)
+# Send as code block (plain text)
 tg_send_code() {
     local title="$1"
     local content="$2"
@@ -82,15 +82,12 @@ tg_send_code() {
     PROJECT_NAME=$(tg_get_property "project.name")
     PROJECT_NAME="${PROJECT_NAME:-Project}"
 
-    # Escape HTML special characters
-    content="${content//&/&amp;}"
-    content="${content//</&lt;}"
-    content="${content//>/&gt;}"
+    local message="${title} [${PROJECT_NAME}]
+━━━━━━━━━━━━━━━━━━━━
+${content}
+━━━━━━━━━━━━━━━━━━━━"
 
-    local message="<b>${title}</b> [${PROJECT_NAME}]
-<pre>${content}</pre>"
-
-    tg_send "$message" "HTML"
+    tg_send "$message"
 }
 
 # Send with inline buttons

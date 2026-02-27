@@ -494,7 +494,7 @@ def cmd_tail(message):
         if len(content) > 2000:
             content = "..." + content[-1997:]
 
-        bot.reply_to(message, f"📺 Claude CLI:\n```\n{content}\n```", parse_mode='Markdown')
+        bot.reply_to(message, f"📺 Claude CLI:\n{content}")
 
     except Exception as e:
         bot.reply_to(message, f"❌ Failed: {e}")
@@ -545,7 +545,7 @@ def cmd_help(message):
 **Log:** TL (tail)
 **Input:** CLD (claude)
 """
-    bot.reply_to(message, help_text, parse_mode='Markdown', reply_markup=get_main_keyboard())
+    bot.reply_to(message, help_text, reply_markup=get_main_keyboard())
 
 # Handle text messages (buttons and Claude input waiting)
 @bot.message_handler(func=lambda message: True)
